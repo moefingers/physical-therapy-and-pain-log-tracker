@@ -1,0 +1,260 @@
+// Physical Therapy and Pain Log Tracker - Database Schema
+// ============================================
+// PRISMA 7 CONFIGURATION
+// ============================================
+// Database URL is configured in prisma.config.ts
+// Runtime adapter configured in src/lib/db.ts
+
+generator client {
+  provider = "prisma-client"
+  output   = "./generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum Role {
+  PROVIDER
+  PATIENT
+}
+
+enum Frequency {
+  DAILY
+  EVERY_2_DAYS
+  EVERY_3_DAYS
+  WEEKLY
+  AS_NEEDED
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+}
+
+// ============================================
+// USER MODEL
+// ============================================
+
+/// User account managed by Stack Auth
+model User {
+  id          String   @id @default(cuid())
+  stackAuthId String   @unique @map("stack_auth_id")
+  email       String   @unique
+  displayName String?  @map("display_name")
+  role        Role     @default(PATIENT)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Provider relations
+  exerciseLibrary Exercise[]        @relation("CreatedExercises")
+  prescriptions   Prescription[]    @relation("ProviderPrescriptions")
+  patients        PatientProvider[] @relation("ProviderPatients")
+
+  // Patient relations
+  providers             PatientProvider[] @relation("PatientProviders")
+  receivedPrescriptions Prescription[]    @relation("PatientPrescriptions")
+  exerciseLogs          ExerciseLog[]
+  painLogs              PainLog[]
+
+  @@map("users")
+}
+
+// ============================================
+// PROVIDER-PATIENT RELATIONSHIP
+// ============================================
+
+/// Many-to-many relationship between providers and patients
+/// Invite code system: provider generates code, patient enters at /join?code=ABC123
+model PatientProvider {
+  id String @id @default(cuid())
+
+  providerId String @map("provider_id")
+  provider   User   @relation("ProviderPatients", fields: [providerId], references: [id], onDelete: Cascade)
+
+  /// Null until patient accepts the invite
+  patientId String? @map("patient_id")
+  patient   User?   @relation("PatientProviders", fields: [patientId], references: [id], onDelete: Cascade)
+
+  /// Invite code for patient to link with provider
+  /// URL param: /join?code=ABC123 (for QR on printed pages)
+  inviteCode String @unique @map("invite_code")
+
+  isAccepted Boolean  @default(false) @map("is_accepted")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([providerId, patientId])
+  @@index([inviteCode])
+  @@map("patient_providers")
+}
+
+// ============================================
+// EXERCISE LIBRARY
+// ============================================
+
+/// Exercise definition in provider's library
+model Exercise {
+  id           String  @id @default(cuid())
+  name         String
+  description  String? @db.Text
+  instructions String? @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  creatorId String @map("creator_id")
+  creator   User   @relation("CreatedExercises", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  media         ExerciseMedia[]
+  prescriptions Prescription[]
+
+  @@index([creatorId])
+  @@map("exercises")
+}
+
+/// Media attached to an exercise (images/videos)
+model ExerciseMedia {
+  id   String    @id @default(cuid())
+  type MediaType
+
+  /// For external URLs (YouTube, image links)
+  url       String?
+  /// For YouTube videos, extracted video ID for embed
+  youtubeId String? @map("youtube_id")
+
+  /// For uploaded images (stored directly in DB as compressed WebP)
+  imageData Bytes?  @map("image_data")
+  mimeType  String? @map("mime_type")
+
+  /// Display order
+  order Int @default(0)
+
+  exerciseId String   @map("exercise_id")
+  exercise   Exercise @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+
+  @@index([exerciseId])
+  @@map("exercise_media")
+}
+
+// ============================================
+// PRESCRIPTIONS
+// ============================================
+
+/// Exercise prescribed to a patient
+model Prescription {
+  id String @id @default(cuid())
+
+  /// Recommended sets per session
+  sets Int @default(3)
+
+  /// Recommended reps per set
+  reps Int @default(10)
+
+  /// How often to perform
+  frequency Frequency @default(DAILY)
+
+  /// Custom notes from provider
+  notes String? @db.Text
+
+  /// Start date of prescription
+  startDate DateTime @default(now()) @map("start_date")
+
+  /// End date (null = ongoing)
+  endDate DateTime? @map("end_date")
+
+  /// Whether prescription is active
+  isActive Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  exerciseId String   @map("exercise_id")
+  exercise   Exercise @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+
+  providerId String @map("provider_id")
+  provider   User   @relation("ProviderPrescriptions", fields: [providerId], references: [id], onDelete: Cascade)
+
+  patientId String @map("patient_id")
+  patient   User   @relation("PatientPrescriptions", fields: [patientId], references: [id], onDelete: Cascade)
+
+  logs ExerciseLog[]
+
+  @@index([patientId, isActive])
+  @@index([providerId])
+  @@map("prescriptions")
+}
+
+// ============================================
+// EXERCISE LOGS
+// ============================================
+
+/// Log of completed exercise session
+model ExerciseLog {
+  id String @id @default(cuid())
+
+  /// Actual sets performed
+  setsCompleted Int @map("sets_completed")
+
+  /// Actual reps performed
+  repsCompleted Int @map("reps_completed")
+
+  /// When the exercise was performed
+  performedAt DateTime @map("performed_at")
+
+  /// Optional notes from patient
+  notes String? @db.Text
+
+  /// Pain level during exercise (0-10 scale)
+  painLevel Int? @map("pain_level")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  prescriptionId String       @map("prescription_id")
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+
+  patientId String @map("patient_id")
+  patient   User   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId, performedAt(sort: Desc)])
+  @@index([prescriptionId])
+  @@map("exercise_logs")
+}
+
+// ============================================
+// PAIN LOGS
+// ============================================
+
+/// General pain log entry
+model PainLog {
+  id String @id @default(cuid())
+
+  /// What activity triggered/was associated with the pain
+  /// Autocomplete from patient's previous entries
+  activity String
+
+  /// Pain level (0-10 scale)
+  painLevel Int @map("pain_level")
+
+  /// Body location/region
+  /// Autocomplete from patient's previous entries
+  bodyRegion String? @map("body_region")
+
+  /// Optional notes
+  notes String? @db.Text
+
+  /// When the pain was logged
+  loggedAt DateTime @map("logged_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  patientId String @map("patient_id")
+  patient   User   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId, loggedAt(sort: Desc)])
+  @@map("pain_logs")
+}
